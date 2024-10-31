@@ -4,4 +4,4 @@ As an experienced software engineer, I bring a robust technical background and d
 
 Skilled in build scripts (Makefile, CMake, Meson) and with two years of low-level software performance optimization, I have developed a high-performance JIT engine comparable to QEMU/TCG. My expertise extends to LLVM development, focusing on backend JIT optimization and frontend IR applications.
 
-I thrive on challenges, continuously learning, and collaborating. With experience leading R&D teams and coordinating cross-departmentally, I also contribute to open-source communities like QEMU, and maintain the Gevico Open Source Community.
+I thrive on challenges, continuously learning, and collaborating.
