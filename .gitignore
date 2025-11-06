@@ -1,0 +1,26 @@
+# Build output
+build/
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Generated files
+config.status
+config.log
+*.pyc
+__pycache__/
+
+# Temporary files
+*.tmp
+*.bak
+*.log
