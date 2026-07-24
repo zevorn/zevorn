@@ -1,0 +1,262 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+GET_MAINTAINER=""
+DRY_RUN=false
+EXTRA_TO=()
+EXTRA_CC=()
+PATCHES=()
+
+usage() {
+    echo "Usage: $0 [-d|--dry-run] [-m|--get-maintainer <path>] [-t|--to <addr>] [-c|--cc <addr>] <patches...>"
+    echo "Example: $0 -d -t qemu-devel@nongnu.org -c 'Name <name@example.com>' -m ~/linux/scripts/get_maintainer.pl *.patch"
+    echo ""
+    echo "Options:"
+    echo "  -d, --dry-run             Test git send-email without sending messages"
+    echo "  -m, --get-maintainer PATH  Path to get_maintainer.pl script"
+    echo "  -t, --to ADDR             Add one To recipient; repeat to add more"
+    echo "  -c, --cc ADDR             Add one Cc recipient; repeat to add more"
+    echo "                               Auto-detected maintainers go to To;"
+    echo "                               reviewers and mailing lists go to Cc"
+    exit 1
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -d|--dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        -m|--get-maintainer)
+            if [[ -z "${2:-}" ]]; then
+                echo "Error: --get-maintainer requires a path argument"
+                exit 1
+            fi
+            GET_MAINTAINER="$2"
+            shift 2
+            ;;
+        -t|--to)
+            if [[ -z "${2:-}" ]]; then
+                echo "Error: -t requires an email address argument"
+                exit 1
+            fi
+            EXTRA_TO+=("$2")
+            shift 2
+            ;;
+        -c|--cc)
+            if [[ -z "${2:-}" ]]; then
+                echo "Error: -c requires an email address argument"
+                exit 1
+            fi
+            EXTRA_CC+=("$2")
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            ;;
+        *)
+            PATCHES+=("$1")
+            shift
+            ;;
+    esac
+done
+
+if [[ ${#PATCHES[@]} -lt 1 ]]; then
+    usage
+fi
+
+forced_to=(
+    # "qemu-devel@nongnu.org"
+    # "qemu-riscv@nongnu.org"
+    # "Alistair Francis <alistair.francis@wdc.com>"
+    # "Daniel Henrique Barboza <dbarboza@ventanamicro.com>"
+    # "Palmer Dabbelt <palmer@dabbelt.com>"
+    # "Weiwei Li <liwei1518@gmail.com>"
+    # "Liu Zhiwei <zhiwei_liu@linux.alibaba.com>"
+    # "Song Gao <gaosong@loongson.cn>"
+    # "Bibo Mao <maobibo@loongson.cn>"
+    # "Jiaxun Yang <jiaxun.yang@flygoat.com>"
+)
+
+forced_cc=(
+    # "Alistair Francis <alistair.francis@wdc.com>"
+    # "Daniel Henrique Barboza <dbarboza@ventanamicro.com>"
+    # "Palmer Dabbelt <palmer@dabbelt.com>"
+    # "Weiwei Li <liwei1518@gmail.com>"
+    # "Liu Zhiwei <zhiwei_liu@linux.alibaba.com>"
+    # "qemu-devel@nongnu.org"
+    #"qemu-riscv@nongnu.org"
+    #"hust-os-kernel-patches@googlegroups.com"
+    #"wangjingwei@iscas.ac.cn"
+    #"tangtao1634@phytium.com.cn"
+)
+
+extract_email() {
+    local input="$1"
+    if [[ "$input" =~ \<([^>]+)\> ]]; then
+        echo "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]'
+    else
+        echo "$input" | tr '[:upper:]' '[:lower:]'
+    fi
+}
+
+seen_to_emails=()
+seen_cc_emails=()
+final_to=()
+final_cc=()
+
+email_in_list() {
+    local needle="$1"
+    shift
+    local email
+
+    for email in "$@"; do
+        if [[ "$email" == "$needle" ]]; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+add_to_recipient() {
+    local entry="$1"
+    local email
+
+    email=$(extract_email "$entry")
+    if ! email_in_list "$email" "${seen_to_emails[@]+"${seen_to_emails[@]}"}" && \
+        ! email_in_list "$email" "${seen_cc_emails[@]+"${seen_cc_emails[@]}"}"; then
+        seen_to_emails+=("$email")
+        final_to+=("$entry")
+    fi
+}
+
+add_cc_recipient() {
+    local entry="$1"
+    local email
+
+    email=$(extract_email "$entry")
+    if ! email_in_list "$email" "${seen_cc_emails[@]+"${seen_cc_emails[@]}"}" && \
+        ! email_in_list "$email" "${seen_to_emails[@]+"${seen_to_emails[@]}"}"; then
+        seen_cc_emails+=("$email")
+        final_cc+=("$entry")
+    fi
+}
+
+add_get_maintainer_recipient() {
+    local line="$1"
+    local entry="$line"
+    local roles=""
+    local person_roles_re='^(.*<[^>]+>)[[:space:]]+\((.*)\)$'
+    local address_roles_re='^([^[:space:]]+)[[:space:]]+\((.*)\)$'
+
+    # With --roles, get_maintainer.pl appends a final parenthesized role list.
+    # Keep only MAINTAINERS M: entries in To; R:, L:, and history-derived
+    # recipients belong in Cc.
+    # The role description itself can contain parentheses, for example
+    # "maintainer:RUNTIME VERIFICATION (RV)".
+    if [[ "$line" =~ $person_roles_re ]]; then
+        entry="${BASH_REMATCH[1]}"
+        roles="${BASH_REMATCH[2]}"
+    elif [[ "$line" =~ $address_roles_re ]]; then
+        entry="${BASH_REMATCH[1]}"
+        roles="${BASH_REMATCH[2]}"
+    fi
+
+    if [[ "$roles" =~ (^|,[[:space:]]*)maintainer: ]] || \
+        [[ "$roles" =~ (^|,[[:space:]]*)chief[[:space:]]penguin: ]]; then
+        add_to_recipient "$entry"
+    else
+        add_cc_recipient "$entry"
+    fi
+}
+
+for entry in "${forced_to[@]+"${forced_to[@]}"}"; do
+    add_to_recipient "$entry"
+done
+
+for entry in "${EXTRA_TO[@]+"${EXTRA_TO[@]}"}"; do
+    add_to_recipient "$entry"
+done
+
+for entry in "${forced_cc[@]+"${forced_cc[@]}"}"; do
+    add_cc_recipient "$entry"
+done
+
+for entry in "${EXTRA_CC[@]+"${EXTRA_CC[@]}"}"; do
+    add_cc_recipient "$entry"
+done
+
+if [[ -n "$GET_MAINTAINER" ]]; then
+    if [[ ! -x "$GET_MAINTAINER" ]]; then
+        echo "Error: get_maintainer.pl not found or not executable: $GET_MAINTAINER"
+        exit 1
+    fi
+
+    # get_maintainer.pl must run from source tree directory (needs MAINTAINERS file)
+    script_dir=$(cd "$(dirname "$GET_MAINTAINER")" && cd .. && pwd)
+    script_name=$(basename "$GET_MAINTAINER")
+
+    # Convert patches to absolute paths, skip cover-letter
+    abs_patches=()
+    for p in "${PATCHES[@]}"; do
+        basename_p=$(basename "$p")
+        [[ "$basename_p" =~ cover-letter ]] && continue
+        abs_patches+=("$(cd "$(dirname "$p")" && pwd)/$basename_p")
+    done
+
+    if [[ ${#abs_patches[@]} -gt 0 ]]; then
+        maintainer_output=$(cd "$script_dir" && "./scripts/$script_name" --roles --no-rolestats "${abs_patches[@]}") || {
+            echo "Warning: get_maintainer.pl failed, continuing with forced recipients only."
+            maintainer_output=""
+        }
+    else
+        maintainer_output=""
+    fi
+
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        # Skip warning/error lines from get_maintainer.pl
+        [[ "$line" =~ ^\./ ]] && continue
+        [[ "$line" =~ "doesn't appear" ]] && continue
+        add_get_maintainer_recipient "$line"
+    done <<< "$maintainer_output"
+fi
+
+args=()
+for t in "${final_to[@]+"${final_to[@]}"}"; do
+    args+=(--to "$t")
+done
+for c in "${final_cc[@]+"${final_cc[@]}"}"; do
+    args+=(--cc "$c")
+done
+
+echo "=== Recipients ==="
+echo "To:"
+for t in "${final_to[@]+"${final_to[@]}"}"; do
+    echo "  $t"
+done
+echo "Cc:"
+for c in "${final_cc[@]+"${final_cc[@]}"}"; do
+    echo "  $c"
+done
+echo "=================="
+echo ""
+echo "Patches to send:"
+for p in "${PATCHES[@]}"; do
+    echo "  $p"
+done
+echo ""
+
+if [[ "$DRY_RUN" == true ]]; then
+    echo "Dry run: git send-email will not send any messages."
+    args=(--dry-run "${args[@]+"${args[@]}"}")
+else
+    read -rp "Send emails? [y/N]: " confirm
+    if [[ ! "$confirm" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+        echo "Aborted."
+        exit 0
+    fi
+fi
+
+git send-email --smtp-debug "${args[@]+"${args[@]}"}" "${PATCHES[@]}"
