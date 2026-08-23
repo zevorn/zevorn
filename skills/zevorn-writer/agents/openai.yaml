@@ -1,0 +1,4 @@
+interface:
+  display_name: "Zevorn Writer"
+  short_description: "Write Chinese and English in Zevorn's personal voice"
+  default_prompt: "Use $zevorn-writer to draft or revise this article in the appropriate Chinese or English voice."
